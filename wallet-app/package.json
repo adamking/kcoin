@@ -33,10 +33,10 @@
   },
   "author": "Kowala",
   "dependencies": {
-    "@material-ui/core": "^1.4.2",
+    "@material-ui/core": "^1.4.3",
     "@material-ui/icons": "^2.0.0",
     "bignumber.js": "^7.2.1",
-    "edge-core-js": "^0.9.14",
+    "edge-core-js": "https://github.com/kowala-tech/edge-core-js.git#develop",
     "edge-currency-kowala": "https://github.com/kowala-tech/edge-currency-kowala.git#develop",
     "moment": "^2.20.1",
     "react": "^16.0.0",

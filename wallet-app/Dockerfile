@@ -2,10 +2,9 @@ FROM ruby:2-stretch
 
 ENV LANG C.UTF-8
 
+# Node stuff
 RUN groupadd --gid 1000 node \
   && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
-
-# gpg keys listed at https://github.com/nodejs/node#release-team
 RUN set -ex \
   && for key in \
     94AE36675C464D64BAFA68DD7434390BDBE9B9C5 \
@@ -21,10 +20,7 @@ RUN set -ex \
     gpg --keyserver hkp://ipv4.pool.sks-keyservers.net --recv-keys "$key" || \
     gpg --keyserver hkp://pgp.mit.edu:80 --recv-keys "$key" ; \
   done
-
-ENV NODE_MAJOR 9
-
-# Node stuff
+ENV NODE_MAJOR 8
 RUN NODE_VERSION=$(curl -SL "https://nodejs.org/dist/index.tab" \
     | grep "^v$NODE_MAJOR" \
     | head -n 1 | awk '{ print substr($1,2) }') \
@@ -52,6 +48,7 @@ RUN apt-get update && apt-get install -y apt-transport-https
 RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add -
 RUN echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
 RUN apt-get update && apt-get install -y yarn
+RUN yarn config set -- --mutex file:/tmp/.yarn-mutex
 
 # Ruby testing stuff
 RUN gem install cucumber capybara selenium-webdriver rspec

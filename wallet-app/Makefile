@@ -1,5 +1,7 @@
 DOCKER_NAME = kowala-app-web
 
+start: .docker-started docker-install docker-serve
+
 install:
 	@yarn install
 
@@ -26,8 +28,6 @@ clean:
 	@rm -rf node_modules/
 	@rm -rf dist/
 	@rm -rf coverage/
-
-start: .docker-started docker-install docker-serve
 
 docker-install: .docker-started
 	@docker-compose exec $(DOCKER_NAME) make install
