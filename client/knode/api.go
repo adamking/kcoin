@@ -14,7 +14,7 @@ import (
 	"github.com/kowala-tech/kcoin/client/accounts"
 	"github.com/kowala-tech/kcoin/client/common"
 	"github.com/kowala-tech/kcoin/client/common/hexutil"
-	"github.com/kowala-tech/kcoin/client/contracts/bindings/token"
+	"github.com/kowala-tech/kcoin/client/contracts/bindings/consensus"
 	"github.com/kowala-tech/kcoin/client/core"
 	"github.com/kowala-tech/kcoin/client/core/rawdb"
 	"github.com/kowala-tech/kcoin/client/core/state"
@@ -179,25 +179,24 @@ type TransferArgs struct {
 // PublicTokenAPI exposes a collection of methods related to tokens
 type PublicTokenAPI struct {
 	accountMgr *accounts.Manager
-	token      token.Token
+	consensus  consensus.Consensus
+	chainID    *big.Int
 }
 
-func NewPublicTokenAPI(accountMgr *accounts.Manager, token token.Token) *PublicTokenAPI {
+func NewPublicTokenAPI(accountMgr *accounts.Manager, c consensus.Consensus, chainID *big.Int) *PublicTokenAPI {
 	return &PublicTokenAPI{
 		accountMgr: accountMgr,
-		token:      token,
+		consensus:  c,
+		chainID:    chainID,
 	}
 }
 
 func (api *PublicTokenAPI) GetBalance(target common.Address) (*big.Int, error) {
-	return api.token.BalanceOf(target)
+	return api.consensus.Token().BalanceOf(target)
 }
 
 func (api *PublicTokenAPI) Transfer(args TransferArgs) (common.Hash, error) {
-	// Look up the wallet containing the requested signer
-	account := accounts.Account{Address: args.From}
-
-	wallet, err := api.accountMgr.Find(account)
+	_, walletAccount, err := api.getWallet(args.From)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -206,12 +205,59 @@ func (api *PublicTokenAPI) Transfer(args TransferArgs) (common.Hash, error) {
 		args.Value = new(hexutil.Big)
 	}
 
-	walletAccount, err := accounts.NewWalletAccount(wallet, account)
+	return api.consensus.Token().Transfer(walletAccount, *args.To, (*big.Int)(args.Value), args.Data, args.CustomFallback)
+}
+
+func (api *PublicTokenAPI) Mint(from, to common.Address, value *hexutil.Big) (common.Hash, error) {
+	if value == nil {
+		return common.Hash{}, errors.New("a number of tokens should be specified")
+	}
+
+	account, walletAccount, err := api.getWallet(from)
 	if err != nil {
 		return common.Hash{}, err
 	}
 
-	return api.token.Transfer(walletAccount, *args.To, (*big.Int)(args.Value), args.Data, args.CustomFallback)
+	tOpts := &accounts.TransactOpts{
+		From: from,
+		Signer: func(signer types.Signer, address common.Address, tx *types.Transaction) (*types.Transaction, error) {
+			return walletAccount.SignTx(*account, tx, api.chainID)
+		},
+	}
+
+	return api.consensus.Mint(tOpts, to, value.ToInt())
+}
+
+func (api *PublicTokenAPI) Confirm(from common.Address, transactionID *hexutil.Big) (common.Hash, error) {
+	account, walletAccount, err := api.getWallet(from)
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	tOpts := &accounts.TransactOpts{
+		From: from,
+		Signer: func(signer types.Signer, address common.Address, tx *types.Transaction) (*types.Transaction, error) {
+			return walletAccount.SignTx(*account, tx, api.chainID)
+		},
+	}
+
+	return api.consensus.Confirm(tOpts, transactionID.ToInt())
+}
+
+func (api *PublicTokenAPI) getWallet(addr common.Address) (*accounts.Account, accounts.WalletAccount, error) {
+	// Look up the wallet containing the requested signer
+	for _, wallet := range api.accountMgr.Wallets() {
+		for _, account := range wallet.Accounts() {
+			if account.Address == addr {
+				walletAccount, err := accounts.NewWalletAccount(wallet, account)
+				if err != nil {
+					return nil, nil, err
+				}
+				return &account, walletAccount, nil
+			}
+		}
+	}
+	return nil, nil, errors.New("account not found in any wallet")
 }
 
 // PrivateAdminAPI is the collection of Kowala full node-related APIs

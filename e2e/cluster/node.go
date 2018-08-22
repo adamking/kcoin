@@ -1,11 +1,14 @@
 package cluster
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/kowala-tech/kcoin/client/common"
+	"github.com/kowala-tech/kcoin/client/kcoinclient"
 	"github.com/kowala-tech/kcoin/client/log"
 )
 
@@ -70,7 +73,7 @@ func WalletBackendSpec(nodeSuffix, rpcAddr, notificationsAddr string) (*NodeSpec
 	return spec, nil
 }
 
-func TransactionsPersistanceSpec(nodeSuffix, rpcAddr, redisAddr string) (*NodeSpec, error) {
+func TransactionsPersistanceSpec(nodeSuffix, nsqdAddr, redisAddr string) (*NodeSpec, error) {
 	id := NodeID("transactions-persistance-" + nodeSuffix)
 	spec := &NodeSpec{
 		ID:    id,
@@ -78,7 +81,7 @@ func TransactionsPersistanceSpec(nodeSuffix, rpcAddr, redisAddr string) (*NodeSp
 		Cmd:   []string{},
 		Env: []string{
 			fmt.Sprintf("REDIS_ADDR=%v", redisAddr),
-			fmt.Sprintf("TESTNET_RPC_ADDR=%v", rpcAddr),
+			fmt.Sprintf("NSQ_ADDR=%v", nsqdAddr),
 		},
 		PortMapping: map[int32]int32{},
 	}
@@ -102,6 +105,44 @@ func NotificationsApiSpec(nodeSuffix, redisAddr string) (*NodeSpec, error) {
 	return spec, nil
 }
 
+func FaucetSpec(nodeSuffix, bootnodes string, genesisContent, accountContent []byte, accountPassword string, port int32) (*NodeSpec, error) {
+	id := NodeID("faucet-" + nodeSuffix)
+	spec := &NodeSpec{
+		ID:    id,
+		Image: "kowalatech/faucet:dev",
+		Files: map[string][]byte{
+			"/faucet/genesis.json": genesisContent,
+			"/faucet/account":      accountContent,
+			"/faucet/password.txt": []byte(accountPassword),
+		},
+		Cmd: []string{
+			"--bootnodes", bootnodes,
+			"--testnet",
+			"--verbosity", "6",
+			"--kcoinport", "22334",
+			"--genesis", "/faucet/genesis.json",
+			"--account.json", "/faucet/account",
+			"--account.pass", "/faucet/password.txt",
+		},
+		Env: []string{},
+		PortMapping: map[int32]int32{
+			8080: port,
+		},
+	}
+	spec.IsReadyFn = func(runner NodeRunner) error {
+		ip := runner.HostIP()
+		resp, err := http.Get(fmt.Sprintf("http://%v:%v/", ip, port))
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != 200 {
+			return errors.New("the faucet didn't return 200 on the root url")
+		}
+		return nil
+	}
+	return spec, nil
+}
+
 func RedisSpec(nodeSuffix string) (*NodeSpec, error) {
 	id := NodeID("redis-" + nodeSuffix)
 	spec := &NodeSpec{
@@ -111,6 +152,55 @@ func RedisSpec(nodeSuffix string) (*NodeSpec, error) {
 		Env:   []string{},
 		PortMapping: map[int32]int32{
 			6379: 6379,
+		},
+	}
+	return spec, nil
+}
+
+func TransactionsPublisherSpec(nodeSuffix, nsqdAddr, redisAddr, rpcAddr string) (*NodeSpec, error) {
+	id := NodeID("transactions-publisher-" + nodeSuffix)
+	spec := &NodeSpec{
+		ID:    id,
+		Image: "kowalatech/transactions_publisher:dev",
+		Cmd:   []string{},
+		Env: []string{
+			fmt.Sprintf("NSQ_ADDR=%s", nsqdAddr),
+			fmt.Sprintf("REDIS_ADDR=%s", redisAddr),
+			fmt.Sprintf("TESTNET_RPC_ADDR=%s", rpcAddr),
+		},
+		PortMapping: map[int32]int32{},
+	}
+	return spec, nil
+}
+
+func NsqlookupdSpec(nodeSuffix string) (*NodeSpec, error) {
+	id := NodeID("nsqlookupd-" + nodeSuffix)
+	spec := &NodeSpec{
+		ID:    id,
+		Image: "nsqio/nsq",
+		Cmd: []string{
+			"/nsqlookupd",
+		},
+		Env: []string{},
+		PortMapping: map[int32]int32{
+			4160: 4160,
+		},
+	}
+	return spec, nil
+}
+
+func NsqdSpec(nodeSuffix, nsqlookupdAddr string) (*NodeSpec, error) {
+	id := NodeID("nsqd-" + nodeSuffix)
+	spec := &NodeSpec{
+		ID:    id,
+		Image: "nsqio/nsq",
+		Cmd: []string{
+			"/nsqd",
+			fmt.Sprintf("--lookupd-tcp-address=%s", nsqlookupdAddr),
+		},
+		Env: []string{},
+		PortMapping: map[int32]int32{
+			4150: 4150,
 		},
 	}
 	return spec, nil
@@ -129,6 +219,29 @@ func kcoinIsReadyFn(nodeID NodeID) func(NodeRunner) error {
 			return fmt.Errorf("node returns a wrong result. expect %s, got %s", randomStr, res.StdOut)
 		}
 
+		return nil
+	}
+}
+
+func rpcIsReadyFn(nodeID NodeID, rpcPort int32) func(NodeRunner) error {
+	parentFn := kcoinIsReadyFn(nodeID)
+	return func(runner NodeRunner) error {
+		err := parentFn(runner)
+		if err != nil {
+			return err
+		}
+		rpcAddr := fmt.Sprintf("http://%v:%v", runner.HostIP(), rpcPort)
+		client, err := kcoinclient.Dial(rpcAddr)
+		if err != nil {
+			return err
+		}
+		block, err := client.BlockNumber(context.Background())
+		if err != nil {
+			return err
+		}
+		if block.Int64() == 0 {
+			return errors.New("rpc service didn't see any block yet")
+		}
 		return nil
 	}
 }

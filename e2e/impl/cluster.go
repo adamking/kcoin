@@ -25,14 +25,35 @@ func (ctx *Context) DeleteCluster() error {
 	return ctx.nodeRunner.StopAll()
 }
 
-func (ctx *Context) InitCluster(logsToStdout bool) error {
+func (ctx *Context) GenesisSetMultisigRequiredSignatures(req int) error {
+	ctx.genesisOptions.requiredGovernanceConfirmations = uint64(req)
+	return nil
+}
+
+func (ctx *Context) RunCluster() error {
+	if err := ctx.initCluster(); err != nil {
+		return err
+	}
+
+	if err := ctx.nodeRunner.StopAll(); err != nil {
+		return err
+	}
+
+	if err := ctx.runNodes(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ctx *Context) initCluster() error {
 	var err error
 
 	nodeRunnerOpts := &cluster.NewNodeRunnerOpts{
-		Feature:      ctx.Name,
-		LogsToStdout: logsToStdout,
+		Prefix:       fmt.Sprintf("%v-%03d", ctx.Name, ctx.GetScenarioNumber()),
+		LogsToStdout: ctx.logsToStdout,
 	}
-	if !logsToStdout {
+	if !ctx.logsToStdout {
 		logsDir := "./logs"
 
 		if err := ctx.initLogs(logsDir); err != nil {
@@ -52,18 +73,6 @@ func (ctx *Context) InitCluster(logsToStdout bool) error {
 	if err := ctx.buildGenesis(); err != nil {
 		return err
 	}
-	return nil
-}
-
-func (ctx *Context) RunCluster() error {
-	if err := ctx.nodeRunner.StopAll(); err != nil {
-		return err
-	}
-
-	if err := ctx.runNodes(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -115,6 +124,15 @@ func (ctx *Context) generateAccounts() error {
 	}
 	ctx.mtokensSeederAccount = *mtokensSeederAccount
 
+	ctx.mtokensGovernanceAccounts = []accounts.Account{*mtokensSeederAccount}
+	for i := 0; i < 2; i++ {
+		mtokensGovernanceAccount, err := ctx.newAccount()
+		if err != nil {
+			return err
+		}
+		ctx.mtokensGovernanceAccounts = append(ctx.mtokensGovernanceAccounts, *mtokensGovernanceAccount)
+	}
+
 	genesisValidatorAccount, err := ctx.newAccount()
 	if err != nil {
 		return err
@@ -124,13 +142,15 @@ func (ctx *Context) generateAccounts() error {
 	return nil
 }
 
+const AccountPass = "test"
+
 func (ctx *Context) newAccount() (*accounts.Account, error) {
-	acc, err := ctx.AccountsStorage.NewAccount("test")
+	acc, err := ctx.AccountsStorage.NewAccount(AccountPass)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := ctx.AccountsStorage.Unlock(acc, "test"); err != nil {
+	if err := ctx.AccountsStorage.Unlock(acc, AccountPass); err != nil {
 		return nil, err
 	}
 	return &acc, nil
@@ -144,7 +164,7 @@ func (ctx *Context) runBootnode() error {
 		return err
 	}
 
-	if err := ctx.nodeRunner.Run(bootnode, ctx.GetScenarioNumber()); err != nil {
+	if err := ctx.nodeRunner.Run(bootnode); err != nil {
 		return err
 	}
 	err = common.WaitFor("fetching bootnode enode", 1*time.Second, 20*time.Second, func() error {
@@ -187,7 +207,7 @@ func (ctx *Context) runGenesisValidator() error {
 		WithValidation().
 		NodeSpec()
 
-	if err := ctx.nodeRunner.Run(spec, ctx.GetScenarioNumber()); err != nil {
+	if err := ctx.nodeRunner.Run(spec); err != nil {
 		return err
 	}
 
@@ -210,10 +230,11 @@ func (ctx *Context) runRpc() error {
 		WithGenesis(ctx.genesis).
 		WithCoinbase(ctx.kusdSeederAccount).
 		WithAccount(ctx.AccountsStorage, ctx.kusdSeederAccount).
+		WithAccount(ctx.AccountsStorage, ctx.mtokensSeederAccount).
 		WithRpc(ctx.rpcPort).
 		NodeSpec()
 
-	if err := ctx.nodeRunner.Run(spec, ctx.GetScenarioNumber()); err != nil {
+	if err := ctx.nodeRunner.Run(spec); err != nil {
 		return err
 	}
 
@@ -230,9 +251,9 @@ func (ctx *Context) runRpc() error {
 
 func (ctx *Context) triggerGenesisValidation() error {
 	command := fmt.Sprintf(`
-		personal.unlockAccount(eth.coinbase, "test");
+		personal.unlockAccount(eth.coinbase, "%s");
 		eth.sendTransaction({from:eth.coinbase,to: "%v",value: 1})
-	`, ctx.kusdSeederAccount.Address.Hex())
+	`, AccountPass, ctx.kusdSeederAccount.Address.Hex())
 	_, err := ctx.nodeRunner.Exec(ctx.genesisValidatorNodeID, cluster.KcoinExecCommand(command))
 	if err != nil {
 		return err
@@ -267,7 +288,7 @@ func (ctx *Context) buildGenesis() error {
 	newGenesis, err := genesis.Generate(genesis.Options{
 		Network: "test",
 		Consensus: &genesis.ConsensusOpts{
-			Engine:           "tendermint",
+			Engine:           "konsensus",
 			MaxNumValidators: 10,
 			FreezePeriod:     5,
 			BaseDeposit:      baseDeposit,
@@ -278,24 +299,15 @@ func (ctx *Context) buildGenesis() error {
 			MiningToken: &genesis.MiningTokenOpts{
 				Name:     "mUSD",
 				Symbol:   "mUSD",
-				Cap:      1000,
+				Cap:      100000,
 				Decimals: 18,
-				Holders: []genesis.TokenHolder{
-					{
-						Address:   genesisValidatorAddr,
-						NumTokens: baseDeposit * 100,
-					},
-					{
-						Address:   ctx.mtokensSeederAccount.Address.String(),
-						NumTokens: baseDeposit * 100,
-					},
-				},
+				Holders:  ctx.getMTokenHolders(baseDeposit, genesisValidatorAddr),
 			},
 		},
 		Governance: &genesis.GovernanceOpts{
 			Origin:           "0x259be75d96876f2ada3d202722523e9cd4dd917d",
-			Governors:        []string{"0x259be75d96876f2ada3d202722523e9cd4dd917d"},
-			NumConfirmations: 1,
+			Governors:        ctx.getGovernors(),
+			NumConfirmations: ctx.genesisOptions.requiredGovernanceConfirmations,
 		},
 		DataFeedSystem: &genesis.DataFeedSystemOpts{
 			MaxNumOracles: 10,
@@ -307,7 +319,7 @@ func (ctx *Context) buildGenesis() error {
 				UpdatePeriod:  30,
 			},
 		},
-		PrefundedAccounts: []genesis.PrefundedAccount{
+		PrefundedAccounts: ctx.getPrefundedAccounts(baseDeposit, []genesis.PrefundedAccount{
 			{
 				Address: ctx.genesisValidatorAccount.Address.Hex(),
 				Balance: baseDeposit * 100,
@@ -320,11 +332,7 @@ func (ctx *Context) buildGenesis() error {
 				Address: ctx.kusdSeederAccount.Address.Hex(),
 				Balance: baseDeposit * 10000,
 			},
-			{
-				Address: ctx.mtokensSeederAccount.Address.Hex(),
-				Balance: baseDeposit * 10000,
-			},
-		},
+		}...),
 	})
 	if err != nil {
 		return err
@@ -337,4 +345,45 @@ func (ctx *Context) buildGenesis() error {
 	ctx.genesis = rawJson
 
 	return nil
+}
+
+func (ctx *Context) getMTokenHolders(baseDeposit uint64, genesisValidatorAddr string) []genesis.TokenHolder {
+	holders := []genesis.TokenHolder{
+		{
+			Address:   genesisValidatorAddr,
+			NumTokens: baseDeposit * 100,
+		},
+	}
+
+	for _, acc := range ctx.mtokensGovernanceAccounts {
+		holders = append(holders, genesis.TokenHolder{
+			Address:   acc.Address.String(),
+			NumTokens: baseDeposit * 100,
+		})
+	}
+
+	return holders
+}
+
+func (ctx *Context) getGovernors() []string {
+	var governors []string
+
+	for _, acc := range ctx.mtokensGovernanceAccounts {
+		governors = append(governors, acc.Address.Hex())
+	}
+
+	return governors
+}
+
+func (ctx *Context) getPrefundedAccounts(baseDeposit uint64, accs ...genesis.PrefundedAccount) []genesis.PrefundedAccount {
+	var governors []genesis.PrefundedAccount
+
+	for _, acc := range ctx.mtokensGovernanceAccounts {
+		governors = append(governors, genesis.PrefundedAccount{
+			Address: acc.Address.Hex(),
+			Balance: baseDeposit * 10000,
+		})
+	}
+
+	return append(governors, accs...)
 }

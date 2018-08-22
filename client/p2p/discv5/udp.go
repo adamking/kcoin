@@ -20,9 +20,11 @@ const Version = 4
 
 // Errors
 var (
-	errPacketTooSmall = errors.New("too small")
-	errBadPrefix      = errors.New("bad prefix")
-	errTimeout        = errors.New("RPC timeout")
+	errPacketTooSmall    = errors.New("too small")
+	errBadPrefix         = errors.New("bad Prefix")
+	errTimeout           = errors.New("RPC timeout")
+	errUnknownPacketType = errors.New("unknown packet type")
+	errBadTopic          = errors.New("bad Topic")
 )
 
 // Timeouts
@@ -122,6 +124,7 @@ type (
 )
 
 var (
+	//fixme: @jekamas use a shorter prefix. Breaking change!
 	versionPrefix     = []byte("temporary discovery v5")
 	versionPrefixSize = len(versionPrefix)
 	sigSize           = 520 / 8
@@ -272,6 +275,10 @@ func (t *udp) sendNeighbours(remote *Node, results []*Node) {
 	// to stay below the 1280 byte limit.
 	p := neighbors{Expiration: uint64(time.Now().Add(expiration).Unix())}
 	for i, result := range results {
+		if result.ID == remote.ID {
+			//skip remote node itself
+			continue
+		}
 		p.Nodes = append(p.Nodes, nodeToRPC(result))
 		if len(p.Nodes) == maxNeighbors || i == len(results)-1 {
 			t.sendPacket(remote.ID, remote.addr(), byte(neighborsPacket), p)
@@ -364,12 +371,17 @@ func (t *udp) readLoop() {
 	for {
 		nbytes, from, err := t.conn.ReadFromUDP(buf)
 		ingressTrafficMeter.Mark(int64(nbytes))
+
+		if err := IsDiscoveryPacket(buf); err != nil {
+			continue
+		}
+
 		if netutil.IsTemporaryError(err) {
 			// Ignore temporary read errors.
 			log.Debug(fmt.Sprintf("Temporary read error: %v", err))
 			continue
 		} else if err != nil {
-			// Shut down the loop for permament errors.
+			// Shut down the loop for permanent errors.
 			log.Debug(fmt.Sprintf("Read error: %v", err))
 			return
 		}
@@ -381,7 +393,6 @@ func (t *udp) handlePacket(from *net.UDPAddr, buf []byte) error {
 	pkt := ingressPacket{remoteAddr: from}
 	if err := decodePacket(buf, &pkt); err != nil {
 		log.Debug(fmt.Sprintf("Bad packet from %v: %v", from, err))
-		//fmt.Println("bad packet", err)
 		return err
 	}
 	t.net.reqReadPacket(pkt)
@@ -394,18 +405,18 @@ func decodePacket(buffer []byte, pkt *ingressPacket) error {
 	}
 	buf := make([]byte, len(buffer))
 	copy(buf, buffer)
-	prefix, sig, sigdata := buf[:versionPrefixSize], buf[versionPrefixSize:headSize], buf[headSize:]
-	if !bytes.Equal(prefix, versionPrefix) {
-		return errBadPrefix
+	packet := newPacket(buf)
+	if err := packet.isCorrectPrefix(); err != nil {
+		return err
 	}
-	fromID, err := recoverNodeID(crypto.Keccak256(buf[headSize:]), sig)
+	fromID, err := recoverNodeID(crypto.Keccak256(buf[headSize:]), packet.Signature)
 	if err != nil {
 		return err
 	}
 	pkt.rawData = buf
 	pkt.hash = crypto.Keccak256(buf[versionPrefixSize:])
 	pkt.remoteID = fromID
-	switch pkt.ev = nodeEvent(sigdata[0]); pkt.ev {
+	switch pkt.ev = nodeEvent(packet.packetType); pkt.ev {
 	case pingPacket:
 		pkt.data = new(ping)
 	case pongPacket:
@@ -423,9 +434,9 @@ func decodePacket(buffer []byte, pkt *ingressPacket) error {
 	case topicNodesPacket:
 		pkt.data = new(topicNodes)
 	default:
-		return fmt.Errorf("unknown packet type: %d", sigdata[0])
+		return fmt.Errorf("unknown packet type: %d", packet.packetType)
 	}
-	s := rlp.NewStream(bytes.NewReader(sigdata[1:]), 0)
+	s := rlp.NewStream(bytes.NewReader(packet.Data[1:]), 0)
 	err = s.Decode(pkt.data)
 	return err
 }

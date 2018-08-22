@@ -31,53 +31,149 @@ func NewWalletBackendContext(parentCtx *Context) *WalletBackendContext {
 func (ctx *WalletBackendContext) Reset() {
 }
 
-func (ctx *WalletBackendContext) TheWalletBackendNodeIsRunning() error {
-	rpcIP, err := ctx.globalCtx.nodeRunner.IP(ctx.globalCtx.rpcNodeID)
-	if err != nil {
-		return err
-	}
-	rpcAddr := fmt.Sprintf("http://%v:%v", rpcIP, ctx.globalCtx.rpcPort)
-
+func (ctx *WalletBackendContext) runRedis() (redisAddr string, err error) {
 	redisSpec, err := cluster.RedisSpec(ctx.globalCtx.nodeSuffix)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := ctx.globalCtx.nodeRunner.Run(redisSpec, ctx.globalCtx.GetScenarioNumber()); err != nil {
-		return err
+	if err := ctx.globalCtx.nodeRunner.Run(redisSpec); err != nil {
+		return "", err
 	}
 	redisIP, err := ctx.globalCtx.nodeRunner.IP(redisSpec.ID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	redisAddr := fmt.Sprintf("%v:6379", redisIP)
+	return fmt.Sprintf("%v:6379", redisIP), nil
+}
 
-	transactionsPersistanceSpec, err := cluster.TransactionsPersistanceSpec(ctx.globalCtx.nodeSuffix, rpcAddr, redisAddr)
+func (ctx *WalletBackendContext) runNsqlookupd() (nsqlookupdAddr string, err error) {
+	nsqlookupdSpec, err := cluster.NsqlookupdSpec(ctx.globalCtx.nodeSuffix)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.globalCtx.nodeRunner.Run(nsqlookupdSpec); err != nil {
+		return "", err
+	}
+
+	nsqlookupdIP, err := ctx.globalCtx.nodeRunner.IP(nsqlookupdSpec.ID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%v:4160", nsqlookupdIP), nil
+}
+
+func (ctx *WalletBackendContext) runNsqd(nsqlookupdAddr string) (nsqdAddr string, err error) {
+	nsqdSpec, err := cluster.NsqdSpec(ctx.globalCtx.nodeSuffix, nsqlookupdAddr)
+	if err != nil {
+		return "", nil
+	}
+	if err := ctx.globalCtx.nodeRunner.Run(nsqdSpec); err != nil {
+		return "", err
+	}
+	nsqdIP, err := ctx.globalCtx.nodeRunner.IP(nsqdSpec.ID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%v:4150", nsqdIP), nil
+}
+
+func (ctx *WalletBackendContext) runTransactionsPersistance(nsqdAddr, redisAddr string) error {
+	transactionsPersistanceSpec, err := cluster.TransactionsPersistanceSpec(ctx.globalCtx.nodeSuffix, nsqdAddr, redisAddr)
 	if err != nil {
 		return err
 	}
-	if err := ctx.globalCtx.nodeRunner.Run(transactionsPersistanceSpec, ctx.globalCtx.GetScenarioNumber()); err != nil {
+	if err := ctx.globalCtx.nodeRunner.Run(transactionsPersistanceSpec); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func (ctx *WalletBackendContext) runNotificationsApi(redisAddr string) (notificationsApiAddr string, err error) {
 	notificationsApiSpec, err := cluster.NotificationsApiSpec(ctx.globalCtx.nodeSuffix, redisAddr)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := ctx.globalCtx.nodeRunner.Run(notificationsApiSpec, ctx.globalCtx.GetScenarioNumber()); err != nil {
-		return err
+	if err := ctx.globalCtx.nodeRunner.Run(notificationsApiSpec); err != nil {
+		return "", err
 	}
 	notificationsApiIP, err := ctx.globalCtx.nodeRunner.IP(notificationsApiSpec.ID)
 	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%v:%v", notificationsApiIP, "3000"), nil
+}
+
+func (ctx *WalletBackendContext) runTransactionsPublisher(nsqdAddr, redisAddr, rpcAddr string) error {
+	txPublisherSpec, err := cluster.TransactionsPublisherSpec(ctx.globalCtx.nodeSuffix, nsqdAddr, redisAddr, rpcAddr)
+	if err != nil {
 		return err
 	}
-	notificationsApiAddr := fmt.Sprintf("%v:%v", notificationsApiIP, "3000")
+	if err := ctx.globalCtx.nodeRunner.Run(txPublisherSpec); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func (ctx *WalletBackendContext) runWalletBackend(rpcAddr, notificationsApiAddr string) error {
 	spec, err := cluster.WalletBackendSpec(ctx.globalCtx.nodeSuffix, rpcAddr, notificationsApiAddr)
 	if err != nil {
 		return err
 	}
+	if err := ctx.globalCtx.nodeRunner.Run(spec); err != nil {
+		return err
+	}
 
-	if err := ctx.globalCtx.nodeRunner.Run(spec, ctx.globalCtx.GetScenarioNumber()); err != nil {
+	return nil
+}
+
+func (ctx *WalletBackendContext) getRpcAddr() (rpcAddr string, err error) {
+	rpcIP, err := ctx.globalCtx.nodeRunner.IP(ctx.globalCtx.rpcNodeID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://%v:%v", rpcIP, ctx.globalCtx.rpcPort), nil
+}
+
+func (ctx *WalletBackendContext) TheWalletBackendNodeIsRunning() error {
+	rpcAddr, err := ctx.getRpcAddr()
+	if err != nil {
+		return err
+	}
+
+	redisAddr, err := ctx.runRedis()
+	if err != nil {
+		return err
+	}
+
+	nsqlookupdAddr, err := ctx.runNsqlookupd()
+	if err != nil {
+		return nil
+	}
+
+	nsqdAddr, err := ctx.runNsqd(nsqlookupdAddr)
+	if err != nil {
+		return err
+	}
+
+	err = ctx.runTransactionsPersistance(nsqdAddr, redisAddr)
+	if err != nil {
+		return err
+	}
+
+	notificationsApiAddr, err := ctx.runNotificationsApi(redisAddr)
+	if err != nil {
+		return err
+	}
+
+	err = ctx.runTransactionsPublisher(nsqdAddr, redisAddr, rpcAddr)
+	if err != nil {
+		return err
+	}
+
+	err = ctx.runWalletBackend(rpcAddr, notificationsApiAddr)
+	if err != nil {
 		return err
 	}
 

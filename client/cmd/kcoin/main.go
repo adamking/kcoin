@@ -24,6 +24,7 @@ import (
 	"github.com/kowala-tech/kcoin/client/metrics"
 	"github.com/kowala-tech/kcoin/client/node"
 	"gopkg.in/urfave/cli.v1"
+	"github.com/kowala-tech/kcoin/client/version"
 )
 
 const (
@@ -44,10 +45,6 @@ var (
 		utils.DataDirFlag,
 		utils.KeyStoreDirFlag,
 		utils.NoUSBFlag,
-		utils.DashboardEnabledFlag,
-		utils.DashboardAddrFlag,
-		utils.DashboardPortFlag,
-		utils.DashboardRefreshFlag,
 		utils.TxPoolNoLocalsFlag,
 		utils.TxPoolJournalFlag,
 		utils.TxPoolRejournalFlag,
@@ -65,6 +62,7 @@ var (
 		utils.LightServFlag,
 		utils.LightPeersFlag,
 		utils.LightKDFFlag,
+		utils.VersionRepository,
 		utils.CacheFlag,
 		utils.CacheDatabaseFlag,
 		utils.CacheGCFlag,
@@ -114,7 +112,7 @@ var (
 		utils.IPCDisabledFlag,
 		utils.IPCPathFlag,
 	}
-	
+
 	metricsFlags = []cli.Flag{
 		utils.MetricsEnableInfluxDBFlag,
 		utils.MetricsInfluxDBEndpointFlag,
@@ -151,6 +149,7 @@ func init() {
 		javascriptCommand,
 		// See misccmd.go:
 		versionCommand,
+		updateCommand,
 		bugCommand,
 		licenseCommand,
 		// See config.go
@@ -189,7 +188,9 @@ func init() {
 		utils.SetupMetrics(ctx)
 
 		// Start system runtime metrics collection
-		go metrics.CollectProcessMetrics(3 * time.Second, ctx.GlobalString(utils.MetricsPrometheusAddressFlag.Name), ctx.GlobalString(utils.MetricsPrometheusSubsystemFlag.Name))
+		go metrics.CollectProcessMetrics(3*time.Second, ctx.GlobalString(utils.MetricsPrometheusAddressFlag.Name), ctx.GlobalString(utils.MetricsPrometheusSubsystemFlag.Name))
+
+		go version.Checker(ctx.GlobalString(utils.VersionRepository.Name))
 
 		utils.SetupNetwork(ctx)
 		return nil

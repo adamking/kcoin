@@ -13,7 +13,7 @@ import (
 	"github.com/kowala-tech/kcoin/client/common"
 	"github.com/kowala-tech/kcoin/client/common/hexutil"
 	engine "github.com/kowala-tech/kcoin/client/consensus"
-	"github.com/kowala-tech/kcoin/client/consensus/tendermint"
+	"github.com/kowala-tech/kcoin/client/consensus/konsensus"
 	"github.com/kowala-tech/kcoin/client/contracts/bindings/consensus"
 	"github.com/kowala-tech/kcoin/client/core"
 	"github.com/kowala-tech/kcoin/client/core/bloombits"
@@ -26,6 +26,7 @@ import (
 	"github.com/kowala-tech/kcoin/client/knode/downloader"
 	"github.com/kowala-tech/kcoin/client/knode/filters"
 	"github.com/kowala-tech/kcoin/client/knode/gasprice"
+	"github.com/kowala-tech/kcoin/client/knode/protocol"
 	"github.com/kowala-tech/kcoin/client/knode/validator"
 	"github.com/kowala-tech/kcoin/client/log"
 	"github.com/kowala-tech/kcoin/client/node"
@@ -110,7 +111,7 @@ func New(ctx *node.ServiceContext, config *Config) (*Kowala, error) {
 		bloomIndexer:   NewBloomIndexer(chainDb, params.BloomBitsBlocks),
 	}
 
-	log.Info("Initialising Kowala protocol", "versions", ProtocolVersions, "network", config.NetworkId)
+	log.Info("Initialising Kowala protocol", "versions", protocol.Constants.Versions, "network", config.NetworkId)
 
 	if !config.SkipBcVersionCheck {
 		bcVersion := rawdb.ReadDatabaseVersion(chainDb)
@@ -196,8 +197,8 @@ func CreateDB(ctx *node.ServiceContext, config *Config, name string) (kcoindb.Da
 
 // CreateConsensusEngine creates the required type of consensus engine instance for an Kowala service
 func CreateConsensusEngine(ctx *node.ServiceContext, config *Config, chainConfig *params.ChainConfig, db kcoindb.Database) engine.Engine {
-	// @TODO (rgeraldes) - complete with tendermint config if necessary, set rewarded to true
-	engine := tendermint.New(&params.TendermintConfig{})
+	// @TODO (rgeraldes) - complete with konsensus config if necessary, set rewarded to true
+	engine := konsensus.New(&params.KonsensusConfig{})
 	return engine
 }
 
@@ -229,7 +230,7 @@ func (s *Kowala) APIs() []rpc.API {
 		}, {
 			Namespace: "mtoken",
 			Version:   "1.0",
-			Service:   NewPublicTokenAPI(s.accountManager, s.consensus.Token()),
+			Service:   NewPublicTokenAPI(s.accountManager, s.consensus, s.chainConfig.ChainID),
 			Public:    false,
 		}, {
 			Namespace: "eth",
@@ -406,7 +407,7 @@ func (s *Kowala) Start(srvr *p2p.Server) error {
 
 	//fixme: should be removed after develop light client
 	if srvr.DiscoveryV5 {
-		protocolTopic := discv5.DiscoveryTopic(s.blockchain.Genesis().Hash(), ProtocolName, kcoin1)
+		protocolTopic := discv5.DiscoveryTopic(s.blockchain.Genesis().Hash(), protocol.ProtocolName, protocol.Kcoin1)
 
 		go func() {
 			srvr.DiscV5.RegisterTopic(protocolTopic, s.shutdownChan)

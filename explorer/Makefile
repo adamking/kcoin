@@ -1,11 +1,7 @@
-.PHONY: start stop build
+.PHONY: mongo
 
-start:
-	docker-compose up -d
+mongo:
+	@docker run --name mongoexplorer -p 27017:27017 -d mongo || docker start mongoexplorer
 
-stop:
-	docker-compose stop
-
-build:
-	docker build . -f web.Dockerfile -t kowalatech/kexplorer
-	docker build . -f sync.Dockerfile -t kowalatech/kexplorersync
+stopmongo:
+	@docker stop mongoexplorer
